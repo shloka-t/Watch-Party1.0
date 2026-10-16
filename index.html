@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Watch Party - Synchronized Cinema Experience</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <!-- Babel -->
+    <script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Plus Jakarta Sans', sans-serif; }
+        .font-mono { font-family: 'JetBrains Mono', monospace; }
+        @keyframes floatUp {
+            0% { transform: translateY(0) scale(0.8); opacity: 1; }
+            50% { transform: translateY(-120px) scale(1.2) rotate(-10deg); opacity: 0.9; }
+            100% { transform: translateY(-250px) scale(1.5) rotate(10deg); opacity: 0; }
+        }
+        .animate-float { animation: floatUp 2.5s ease-out forwards; }
+        .glow-purple { box-shadow: 0 0 30px -5px rgba(168, 85, 247, 0.4); }
+    </style>
+</head>
+<body class="bg-[#0b0c16] text-slate-100 min-h-screen">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const MOVIES = [
+            { id: 1, title: 'Cyberpunk Odyssey', duration: 260, genre: 'Sci-Fi', bg: 'from-purple-900 via-indigo-900 to-slate-950', icon: '🚀' },
+            { id: 2, title: 'Neon Horizon 2099', duration: 320, genre: 'Cyberpunk', bg: 'from-pink-900 via-purple-900 to-slate-950', icon: '🌃' },
+            { id: 3, title: 'Quantum Realm', duration: 190, genre: 'Action', bg: 'from-cyan-900 via-blue-900 to-slate-950', icon: '⚡' }
+        ];
+
+        function App() {
+            const [username, setUsername] = React.useState('');
+            const [roomCode, setRoomCode] = React.useState('');
+            const [inRoom, setInRoom] = React.useState(false);
+            
+            const [isPlaying, setIsPlaying] = React.useState(false);
+            const [currentTime, setCurrentTime] = React.useState(0);
+            const [currentMovie, setCurrentMovie] = React.useState(MOVIES[0]);
+            
+            const [drift, setDrift] = React.useState(12);
+            const [p95Latency, setP95Latency] = React.useState(28);
+            
+            const [chatMessages, setChatMessages] = React.useState([]);
+            const [inputMessage, setInputMessage] = React.useState('');
+            const [floatingEmojis, setFloatingEmojis] = React.useState([]);
+            const [activeUsers, setActiveUsers] = React.useState([]);
+
+            // Cross-tab Synchronization via localStorage for Playback & Chat
+            React.useEffect(() => {
+                if (!inRoom) return;
+
+                const syncKey = `watchparty_room_${roomCode}`;
+                const chatKey = `watchparty_chat_${roomCode}`;
+                const usersKey = `watchparty_users_${roomCode}`;
+
+                // Initialize or Load Room State
+                let stateData = JSON.parse(localStorage.getItem(syncKey));
+                if (!stateData) {
+                    stateData = { isPlaying: false, currentTime: 0, movieId: 1 };
+                    localStorage.setItem(syncKey, JSON.stringify(stateData));
+                } else {
+                    setIsPlaying(stateData.isPlaying);
+                    setCurrentTime(stateData.currentTime);
+                    const m = MOVIES.find(item => item.id === stateData.movieId);
+                    if (m) setCurrentMovie(m);
+                }
+
+                // Initialize or Load Chat
+                let messages = JSON.parse(localStorage.getItem(chatKey)) || [
+                    { id: 1, user: 'System', text: `Room [${roomCode}] initialized. Welcome ${username}!`, type: 'system' }
+                ];
+                setChatMessages(messages);
+
+                // Register user in active list
+                let users = JSON.parse(localStorage.getItem(usersKey)) || [];
+                if (!users.includes(username)) {
+                    users.push(username);
+                    localStorage.setItem(usersKey, JSON.stringify(users));
+                }
+                setActiveUsers(users);
+
+                // Listen to storage events from other tabs/windows
+                const handleStorage = (e) => {
+                    if (e.key === syncKey && e.newValue) {
+                        const data = JSON.parse(e.newValue);
+                        setIsPlaying(data.isPlaying);
+                        setCurrentTime(data.currentTime);
+                        const matchedMovie = MOVIES.find(m => m.id === data.movieId);
+                        if (matchedMovie) setCurrentMovie(matchedMovie);
+                    }
+                    if (e.key === chatKey && e.newValue) {
+                        setChatMessages(JSON.parse(e.newValue));
+                    }
+                    if (e.key === usersKey && e.newValue) {
+                        setActiveUsers(JSON.parse(e.newValue));
+                    }
+                };
+
+                window.addEventListener('storage', handleStorage);
+                return () => window.removeEventListener('storage', handleStorage);
+            }, [inRoom, roomCode, username]);
+
+            const broadcastState = (newPlaying, newTime, newMovieId) => {
+                if (!inRoom) return;
+                const syncKey = `watchparty_room_${roomCode}`;
+                const payload = { isPlaying: newPlaying, currentTime: newTime, movieId: newMovieId || currentMovie.id, timestamp: Date.now() };
+                localStorage.setItem(syncKey, JSON.stringify(payload));
+            };
+
+            const broadcastChat = (newMessages) => {
+                const chatKey = `watchparty_chat_${roomCode}`;
+                localStorage.setItem(chatKey, JSON.stringify(newMessages));
+            };
+
+            // TIMER LOOP
+            React.useEffect(() => {
+                let interval = null;
+                if (isPlaying && inRoom) {
+                    interval = setInterval(() => {
+                        setCurrentTime(prev => {
+                            const nextTime = prev >= currentMovie.duration ? 0 : prev + 1;
+                            broadcastState(true, nextTime);
+                            return nextTime;
+                        });
+                        setDrift(Math.floor(Math.random() * 8) + 4);
+                        setP95Latency(Math.floor(Math.random() * 5) + 24);
+                    }, 1000);
+                } else {
+                    clearInterval(interval);
+                }
+                return () => clearInterval(interval);
+            }, [isPlaying, inRoom, currentMovie]);
+
+            const togglePlay = () => {
+                const nextState = !isPlaying;
+                setIsPlaying(nextState);
+                broadcastState(nextState, currentTime);
+            };
+
+            const changeMovie = (movie) => {
+                setCurrentMovie(movie);
+                setCurrentTime(0);
+                setIsPlaying(true);
+                broadcastState(true, 0, movie.id);
+            };
+
+            const handleEnterRoom = (e) => {
+                e.preventDefault();
+                if (username.trim() && roomCode.trim()) {
+                    setRoomCode(roomCode.toUpperCase());
+                    setInRoom(true);
+                }
+            };
+
+            const handleCreateNewRoom = () => {
+                if (!username.trim()) {
+                    alert('Please enter your username first!');
+                    return;
+                }
+                const code = 'AZB' + Math.floor(1000 + Math.random() * 9000);
+                setRoomCode(code);
+                setInRoom(true);
+            };
+
+            const sendReaction = (emoji) => {
+                const id = Date.now();
+                setFloatingEmojis(prev => [...prev, { id, emoji, left: Math.random() * 70 + 15 }]);
+                setTimeout(() => setFloatingEmojis(prev => prev.filter(item => item.id !== id)), 2500);
+            };
+
+            const sendChat = (e) => {
+                e.preventDefault();
+                if (!inputMessage.trim()) return;
+                const newMsg = { id: Date.now(), user: username, text: inputMessage, type: 'user' };
+                const updated = [...chatMessages, newMsg];
+                setChatMessages(updated);
+                broadcastChat(updated);
+                setInputMessage('');
+            };
+
+            const formatTime = (seconds) => {
+                const mins = Math.floor(seconds / 60);
+                const secs = Math.floor(seconds % 60);
+                return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+            };
+
+            if (!inRoom) {
+                return (
+                    <div className="flex items-center justify-center min-h-screen p-6 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-purple-900/30 via-slate-950 to-black">
+                        <div className="max-w-md w-full bg-slate-900/80 backdrop-blur-2xl border border-slate-700/50 rounded-3xl p-8 shadow-2xl glow-purple space-y-6">
+                            <div className="text-center space-y-3">
+                                <h1 className="text-4xl font-extrabold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-purple-400 via-pink-400 to-cyan-400">
+                                    WATCH PARTY
+                                </h1>
+                                <p className="text-slate-400 text-sm">Sign in with your username to join or create a synced room.</p>
+                            </div>
+                            
+                            <div className="space-y-4 pt-2">
+                                <div>
+                                    <label className="block text-xs font-mono text-slate-400 uppercase mb-1.5">Your Username</label>
+                                    <input 
+                                        type="text" 
+                                        placeholder="e.g. Alex" 
+                                        value={username}
+                                        onChange={(e) => setUsername(e.target.value)}
+                                        className="w-full bg-slate-950 border border-slate-700/60 rounded-2xl px-4 py-3 text-sm text-slate-100 placeholder:text-slate-600 focus:outline-none focus:border-purple-500 font-semibold"
+                                    />
+                                </div>
+
+                                <button onClick={handleCreateNewRoom} className="w-full py-4 bg-gradient-to-r from-purple-600 via-pink-600 to-cyan-600 text-white font-bold rounded-2xl shadow-lg transition">
+                                    🚀 Create New Room
+                                </button>
+                                
+                                <div className="relative flex py-2 items-center">
+                                    <div className="flex-grow border-t border-slate-800"></div>
+                                    <span className="flex-shrink mx-4 text-slate-500 text-xs uppercase font-mono">Or Join with Code</span>
+                                    <div className="flex-grow border-t border-slate-800"></div>
+                                </div>
+
+                                <form onSubmit={handleEnterRoom} className="space-y-3">
+                                    <input 
+                                        type="text" 
+                                        placeholder="ROOM CODE (E.G. AZB4C7)" 
+                                        value={roomCode}
+                                        onChange={(e) => setRoomCode(e.target.value.toUpperCase())}
+                                        className="w-full bg-slate-950 border border-slate-700/60 rounded-2xl px-4 py-3 text-sm text-center font-mono font-bold tracking-widest text-cyan-400 placeholder:text-slate-600 focus:outline-none focus:border-cyan-500"
+                                    />
+                                    <button type="submit" className="w-full py-3.5 bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold rounded-2xl border border-slate-700 transition">
+                                        Join Room
+                                    </button>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
+                );
+            }
+
+            return (
+                <div className="min-h-screen flex flex-col bg-[#080911] text-slate-100">
+                    <header className="border-b border-slate-800 bg-slate-950/80 px-8 py-4 flex items-center justify-between sticky top-0 z-50">
+                        <div className="flex items-center space-x-6">
+                            <h1 className="text-2xl font-black bg-clip-text text-transparent bg-gradient-to-r from-purple-400 via-pink-400 to-cyan-400">WATCH PARTY</h1>
+                            <div className="flex items-center gap-2 bg-purple-900/40 border border-purple-500/40 px-4 py-1.5 rounded-full">
+                                <span className="text-slate-400 text-xs">ROOM:</span>
+                                <span className="font-mono font-bold text-cyan-300">[{roomCode}]</span>
+                            </div>
+                            <div className="text-xs text-slate-400">Signed in as: <strong className="text-purple-400">{username}</strong></div>
+                        </div>
+                        <div className="flex items-center space-x-6 text-xs font-mono">
+                            <div className="bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-xl">
+                                <span className="text-slate-400">P95 LATENCY:</span> <span className="text-emerald-400 font-bold">{p95Latency}ms</span>
+                            </div>
+                            <div className="bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-xl">
+                                <span className="text-slate-400">DRIFT:</span> <span className="text-purple-400 font-bold">{drift}ms</span>
+                            </div>
+                            <button onClick={() => setInRoom(false)} className="px-4 py-1.5 bg-red-500/10 border border-red-500/40 text-red-400 rounded-xl">Leave</button>
+                        </div>
+                    </header>
+
+                    <main className="flex-1 grid grid-cols-1 lg:grid-cols-4 p-6 lg:p-8 gap-8 max-w-[1800px] mx-auto w-full">
+                        <div className="lg:col-span-3 space-y-6 flex flex-col">
+                            <div className={`relative aspect-video rounded-3xl border border-slate-800 bg-gradient-to-b ${currentMovie.bg} shadow-2xl flex items-center justify-center glow-purple overflow-hidden`}>
+                                <div className="text-center space-y-4 z-10">
+                                    <div className="text-7xl">{currentMovie.icon}</div>
+                                    <div>
+                                        <h2 className="text-2xl font-extrabold text-white">{currentMovie.title}</h2>
+                                        <p className="text-xs font-mono text-purple-300 uppercase tracking-widest mt-1">
+                                            {isPlaying ? '● LIVE SYNC PLAYING' : '❚❚ PAUSED'}
+                                        </p>
+                                    </div>
+                                </div>
+                                {floatingEmojis.map(item => (
+                                    <div key={item.id} className="absolute bottom-16 text-5xl animate-float pointer-events-none" style={{ left: `${item.left}%` }}>
+                                        {item.emoji}
+                                    </div>
+                                ))}
+                                <div className="absolute bottom-0 inset-x-0 h-2 bg-slate-950">
+                                    <div className="h-full bg-gradient-to-r from-purple-500 to-cyan-400 transition-all duration-300" style={{ width: `${(currentTime / currentMovie.duration) * 100}%` }}></div>
+                                </div>
+                            </div>
+
+                            <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5 flex items-center justify-between">
+                                <div className="flex items-center space-x-5">
+                                    <button onClick={togglePlay} className="px-8 py-3 bg-gradient-to-r from-purple-600 to-pink-600 text-white font-extrabold text-sm rounded-2xl shadow-lg">
+                                        {isPlaying ? '❚❚ PAUSE' : '▶ PLAY'}
+                                    </button>
+                                    <span className="text-sm font-mono bg-slate-950 px-4 py-2 rounded-xl border border-slate-800 text-cyan-300">
+                                        {formatTime(currentTime)} / {formatTime(currentMovie.duration)}
+                                    </span>
+                                </div>
+                                <div className="flex items-center space-x-2 bg-slate-950 p-2 rounded-2xl border border-slate-800">
+                                    {['🔥', '😂', '🍿', '❤️', '🤯', '👍'].map(emoji => (
+                                        <button key={emoji} onClick={() => sendReaction(emoji)} className="p-2.5 hover:bg-purple-900/40 rounded-xl text-xl">
+                                            {emoji}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+
+                            <div className="bg-slate-900/60 border border-slate-800 rounded-3xl p-5 space-y-3">
+                                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400 font-mono">Shared Playlist Queue</h3>
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                    {MOVIES.map(movie => (
+                                        <div key={movie.id} onClick={() => changeMovie(movie)} className={`p-3.5 rounded-2xl border cursor-pointer transition flex items-center space-x-3 ${currentMovie.id === movie.id ? 'bg-purple-950/50 border-purple-500 text-white' : 'bg-slate-950/50 border-slate-800 text-slate-400'}`}>
+                                            <span className="text-2xl">{movie.icon}</span>
+                                            <div>
+                                                <p className="text-sm font-bold text-white">{movie.title}</p>
+                                                <p className="text-xs font-mono text-slate-500">{formatTime(movie.duration)}</p>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="bg-slate-900 border border-slate-800 rounded-3xl flex flex-col h-[750px] shadow-2xl overflow-hidden">
+                            <div className="p-5 border-b border-slate-800 bg-slate-950 flex items-center justify-between">
+                                <h3 className="font-bold text-sm tracking-wide text-slate-200">LIVE CHAT & PARTICIPANTS</h3>
+                                <span className="text-xs font-mono bg-purple-950 text-purple-300 px-2.5 py-1 rounded-full">{activeUsers.length} Online</span>
+                            </div>
+                            <div className="flex-1 p-5 overflow-y-auto space-y-4 text-sm">
+                                {chatMessages.map(msg => (
+                                    <div key={msg.id} className={`${msg.type === 'system' ? 'text-xs text-slate-500 italic bg-slate-950 p-2.5 rounded-xl border border-slate-800' : 'bg-slate-950 p-3 rounded-2xl border border-slate-800'}`}>
+                                        {msg.type !== 'system' && (
+                                            <div className="flex items-center justify-between mb-1">
+                                                <span className={`font-bold text-xs ${msg.user === username ? 'text-purple-400' : 'text-cyan-400'}`}>{msg.user}</span>
+                                                <span className="text-[10px] text-slate-600 font-mono">Live</span>
+                                            </div>
+                                        )}
+                                        <span className="text-slate-200">{msg.text}</span>
+                                    </div>
+                                ))}
+                            </div>
+                            <form onSubmit={sendChat} className="p-4 border-t border-slate-800 bg-slate-950 flex gap-2">
+                                <input type="text" placeholder="Type a message..." value={inputMessage} onChange={(e) => setInputMessage(e.target.value)} className="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm text-slate-100 focus:outline-none" />
+                                <button type="submit" className="px-5 py-3 bg-purple-600 hover:bg-purple-500 text-white font-bold text-sm rounded-xl">Send</button>
+                            </form>
+                        </div>
+                    </main>
+                </div>
+            );
+        }
+
+        ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+    </script>
+</body>
+</html>
